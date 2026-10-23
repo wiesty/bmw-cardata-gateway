@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
+	"path/filepath"
 	"time"
 )
 
@@ -17,19 +19,24 @@ const (
 
 // Client is the BMW CarData API HTTP client.
 type Client struct {
-	auth *Auth
-	http *http.Client
+	auth   *Auth
+	http   *http.Client
+	budget *requestBudget
 }
 
 // NewClient creates a BMW CarData API client backed by auth.
 func NewClient(auth *Auth) *Client {
 	return &Client{
-		auth: auth,
-		http: &http.Client{Timeout: 30 * time.Second},
+		auth:   auth,
+		budget: &requestBudget{path: filepath.Join(filepath.Dir(auth.sessionPath), "requests.json")},
+		http:   &http.Client{Timeout: 30 * time.Second},
 	}
 }
 
 func (c *Client) do(ctx context.Context, method, path string, body interface{}) (*http.Response, error) {
+	if err := c.budget.check(time.Now()); err != nil {
+		return nil, err
+	}
 	token, err := c.auth.Token(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("auth token: %w", err)
@@ -55,7 +62,14 @@ func (c *Client) do(ctx context.Context, method, path string, body interface{}) 
 
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("x-version", apiVersion)
-	return c.http.Do(req)
+	if err := c.budget.reserve(time.Now()); err != nil {
+		return nil, err
+	}
+	response, requestErr := c.http.Do(req)
+	if err := c.budget.record(response, requestErr, time.Now()); err != nil {
+		log.Printf("[bmw] could not persist request cooldown: %v", err)
+	}
+	return response, requestErr
 }
 
 type vehicleMappingDto struct {
@@ -70,7 +84,7 @@ func (c *Client) getMappings(ctx context.Context) ([]vehicleMappingDto, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("getMappings: %s", resp.Status)
+		return nil, newAPIError("getMappings", resp)
 	}
 	var result []vehicleMappingDto
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
@@ -91,7 +105,7 @@ func (c *Client) listContainers(ctx context.Context) ([]containerDto, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("listContainers: %s", resp.Status)
+		return nil, newAPIError("listContainers", resp)
 	}
 	var result struct {
 		Containers []containerDto `json:"containers"`
@@ -116,7 +130,7 @@ func (c *Client) createContainer(ctx context.Context, name string, descriptors [
 
 	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		return "", responseError("create container", resp.Status, body)
+		return "", fmt.Errorf("%w: %v", newAPIError("create container", resp), responseError("BMW response", resp.Status, body))
 	}
 
 	var result struct {
@@ -154,7 +168,7 @@ func (c *Client) getBasicData(ctx context.Context, vin string) (map[string]any, 
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("getBasicData: %s", resp.Status)
+		return nil, newAPIError("getBasicData", resp)
 	}
 	var result map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
@@ -171,7 +185,7 @@ func (c *Client) getTelematicData(ctx context.Context, vin, containerID string) 
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("getTelematicData: %s", resp.Status)
+		return nil, newAPIError("getTelematicData", resp)
 	}
 	var result struct {
 		TelematicData map[string]TelematicEntry `json:"telematicData"`

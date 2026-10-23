@@ -7,3 +7,6 @@ state*.json
 bmw-bridge
 dist
 .DS_Store
+
+# Persisted shared BMW request budget
+requests.json

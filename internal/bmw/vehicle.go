@@ -85,8 +85,9 @@ type ServiceMessage struct {
 
 // Cache is the thread-safe in-memory store for the latest VehicleData.
 type Cache struct {
-	mu   sync.RWMutex
-	data *VehicleData
+	mu      sync.RWMutex
+	data    *VehicleData
+	polling PollStatus
 }
 
 func NewCache() *Cache { return &Cache{} }

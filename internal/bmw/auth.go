@@ -13,7 +13,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -25,6 +24,8 @@ const (
 	deviceCodeGrantType   = "urn:ietf:params:oauth:grant-type:device_code"
 	refreshTokenGrantType = "refresh_token"
 )
+
+var errRefreshRejected = errors.New("BMW refresh token rejected")
 
 var errBMWAuthorizationPoisoned = errors.New("BMW failed while finalizing device authorization")
 
@@ -83,6 +84,9 @@ func (a *Auth) Token(ctx context.Context) (string, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	session, err := a.loadSession()
 	if err == nil && session.validFor(a.clientID) {
 		return session.AccessToken, nil
@@ -95,7 +99,10 @@ func (a *Auth) Token(ctx context.Context) (string, error) {
 		if refreshErr == nil {
 			return refreshed.AccessToken, nil
 		}
-		log.Printf("[auth] token refresh failed, starting device authorization: %v", refreshErr)
+		if !errors.Is(refreshErr, errRefreshRejected) {
+			return "", fmt.Errorf("refresh BMW session: %w", refreshErr)
+		}
+		log.Printf("[auth] refresh token rejected; device authorization required")
 	}
 
 	for attempt := 1; attempt <= 2; attempt++ {
@@ -259,37 +266,6 @@ func (a *Auth) pollToken(
 	return nil, errors.New("BMW device authorization expired")
 }
 
-func (a *Auth) refresh(ctx context.Context, refreshToken string) (*authSession, error) {
-	resp, err := a.postForm(ctx, a.authServer+"/gcdm/oauth/token", url.Values{
-		"client_id":     {a.clientID},
-		"refresh_token": {refreshToken},
-		"grant_type":    {refreshTokenGrantType},
-	})
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, responseError("refresh token request", resp.Status, body)
-	}
-	session, err := a.decodeSession(body)
-	if err != nil {
-		return nil, err
-	}
-	if session.RefreshToken == "" {
-		session.RefreshToken = refreshToken
-	}
-	if err := a.saveSession(session); err != nil {
-		return nil, err
-	}
-	return session, nil
-}
-
 func (a *Auth) decodeSession(body []byte) (*authSession, error) {
 	var token struct {
 		AccessToken  string `json:"access_token"`
@@ -327,14 +303,7 @@ func (a *Auth) loadSession() (*authSession, error) {
 }
 
 func (a *Auth) saveSession(session *authSession) error {
-	if err := os.MkdirAll(filepath.Dir(a.sessionPath), 0700); err != nil {
-		return err
-	}
-	data, err := json.MarshalIndent(session, "", "  ")
-	if err != nil {
-		return err
-	}
-	if err := os.WriteFile(a.sessionPath, data, 0600); err != nil {
+	if err := writeJSON(a.sessionPath, session); err != nil {
 		return err
 	}
 	a.cached = session

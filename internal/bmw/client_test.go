@@ -21,6 +21,7 @@ func testClient(t *testing.T, handler func(*http.Request) (int, string)) *Client
 	})
 	auth.cached = &authSession{ClientID: "test-client", AccessToken: "test-token", ExpiresAt: time.Now().Add(time.Hour)}
 	client := NewClient(auth)
+	client.budget.backoff = time.Millisecond
 	client.http.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		if r.Header.Get("Authorization") != "Bearer test-token" || r.Header.Get("x-version") != apiVersion {
 			t.Error("missing BMW API headers")

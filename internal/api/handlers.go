@@ -114,8 +114,16 @@ func healthHandler(reg *bmw.VehicleRegistry) http.HandlerFunc {
 		// Report overall health: ok only if all vehicles have data.
 		var lastUpdate *string
 		allReady := true
+		degraded := false
+		polling := make(map[string]bmw.PollStatus, len(vins))
 		for _, vin := range vins {
-			data := reg.Get(vin).Get()
+			cache := reg.Get(vin)
+			status := cache.PollStatus()
+			polling[vin] = status
+			if status.LastError != "" {
+				degraded = true
+			}
+			data := cache.Get()
 			if data == nil {
 				allReady = false
 				continue
@@ -128,10 +136,14 @@ func healthHandler(reg *bmw.VehicleRegistry) http.HandlerFunc {
 
 		if !allReady {
 			w.WriteHeader(http.StatusServiceUnavailable)
-			json.NewEncoder(w).Encode(map[string]any{"status": "starting", "last_update": lastUpdate})
+			json.NewEncoder(w).Encode(map[string]any{"status": "starting", "last_update": lastUpdate, "polling": polling})
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]any{"status": "ok", "last_update": lastUpdate})
+		status := "ok"
+		if degraded {
+			status = "degraded"
+		}
+		json.NewEncoder(w).Encode(map[string]any{"status": status, "last_update": lastUpdate, "polling": polling})
 	}
 }
 
@@ -145,15 +157,16 @@ func vehiclesHandler(reg *bmw.VehicleRegistry) http.HandlerFunc {
 		w.Header().Set("Content-Type", "application/json")
 
 		type entry struct {
-			VIN        string  `json:"vin"`
-			LastUpdate *string `json:"last_update"`
-			Ready      bool    `json:"ready"`
+			VIN        string         `json:"vin"`
+			LastUpdate *string        `json:"last_update"`
+			Ready      bool           `json:"ready"`
+			Polling    bmw.PollStatus `json:"polling"`
 		}
 
 		vins := reg.VINs()
 		result := make([]entry, 0, len(vins))
 		for _, vin := range vins {
-			e := entry{VIN: vin}
+			e := entry{VIN: vin, Polling: reg.Get(vin).PollStatus()}
 			if data := reg.Get(vin).Get(); data != nil {
 				t := data.LastUpdate.Format(time.RFC3339)
 				e.LastUpdate = &t

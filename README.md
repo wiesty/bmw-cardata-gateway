@@ -130,7 +130,7 @@ docker run -d \
   --name bmw-cardata-gateway \
   --restart unless-stopped \
   -e BMW_CLIENT_ID=your-client-id-here \
-  -e POLL_INTERVAL_MINUTES=30 \
+  -e POLL_INTERVAL_MINUTES=60 \
   -p 8080:8080 \
   -v /path/to/local/data:/data \
   ghcr.io/wiesty/bmw-cardata-gateway:latest
@@ -144,7 +144,7 @@ docker run -d \
 |----------|---------|-------------|
 | `BMW_CLIENT_ID` | — | **Required.** From BMW CarData portal |
 | `REST_PORT` | `8080` | HTTP server port |
-| `POLL_INTERVAL_MINUTES` | `30` | Poll interval per vehicle (min: 10) |
+| `POLL_INTERVAL_MINUTES` | `60` | Poll interval per vehicle (min: 30); shared REST budget may delay a poll |
 | `DATA_DIR` | `/data` | Directory for token + state files |
 | `CORS_ORIGINS` | `*` | Allowed CORS origins. `*` = allow all. Comma-separated for restrictions, e.g. `http://localhost:3000,https://myapp.com` |
 | `API_KEY` | _(unset)_ | Optional API key. If set, all endpoints require `X-API-Key: <value>` or `Authorization: Bearer <value>` header |
@@ -181,7 +181,7 @@ Waiting for approval...
 
   VINs:     WBA12345678901234, WBA98765432109876
   Endpoint: http://0.0.0.0:8080/vehicle
-  Poll:     every 30 min
+  Poll:     every 60 min
 ```
 
 Each VIN gets its own independent polling goroutine and state file (`state_<VIN>.json`). The shared data container is reused across all vehicles — adding more VINs does **not** increase API call frequency per vehicle.
@@ -263,19 +263,22 @@ By default all origins are allowed (`*`). To restrict access to specific origins
 
 ## Rate Limits
 
-BMW documents 50 REST requests per day, reset at 00:00 UTC. All 285 container descriptors are fetched in **one** API call per vehicle and interval. At 30 minutes, one vehicle uses 48 polling requests/day, leaving little room for startup or other API calls. Use 60 minutes to leave more headroom. See the [BMW integration guide](https://bmw-cardata.bmwgroup.com/customer/public/api-documentation).
+BMW documents 50 REST requests per day, reset at 00:00 UTC. The gateway conservatively counts every attempted REST request, including failed requests, against a shared limit of 50 per UTC day. This counter is persisted in `$DATA_DIR/requests.json` and shared by all tracked vehicles. Requests made outside this gateway are not counted locally; a BMW 429 response pauses requests until `Retry-After`, or until the next UTC day if no header is provided. All 285 container descriptors are fetched in **one** API call per vehicle and interval. At 30 minutes, one vehicle uses 48 polling requests/day, leaving little room for startup or other API calls. The default 60-minute interval leaves more headroom. See the [BMW integration guide](https://bmw-cardata.bmwgroup.com/customer/public/api-documentation).
 
 ## Persistence
 
 | File | Contents |
 |------|----------|
 | `$DATA_DIR/session.json` | OAuth tokens (auto-refreshed) |
+| `$DATA_DIR/requests.json` | Shared daily request count and API cooldown |
 | `$DATA_DIR/state.json` | Container ID + VIN (single-vehicle) |
 | `$DATA_DIR/state_<VIN>.json` | Per-vehicle poll state (multi-vehicle mode) |
 
 Descriptor changes automatically select a new container using a content hash. The first poll then refreshes the telemetry cache.
 
 Without `BMW_VINS`, the primary vehicle is discovered from your BMW account on each start. When the VIN changes, the previous vehicle's cached telemetry is discarded. Set `BMW_VINS` to explicitly select a vehicle when multiple primary vehicles are mapped to your account.
+
+If vehicle discovery fails temporarily (for example, BMW returns 502), the bridge uses the saved VIN when available. Without a saved VIN, or when container setup is temporarily unavailable, startup retries in the same process after 5 minutes, with increasing delays capped at 6 hours. Authentication/permission errors and accounts without a primary vehicle do not fall back to old VINs. Saved telemetry remains available during an outage, even if it is older than the polling interval; `last_update` continues to show its original poll time.
 
 On first start, the container prints an auth URL to stdout:
 
@@ -304,6 +307,20 @@ go run ./cmd/main.go
 ```
 
 ---
+
+## Polling diagnostics and recovery
+
+`GET /vehicles` includes `polling` for each vehicle. `GET /health` includes a map of the same diagnostics:
+
+- `state`: `waiting`, `polling` or `degraded`.
+- `last_attempt`, `last_success`, `next_poll`: gateway request scheduling timestamps.
+- `last_error`, `consecutive_failures`: the latest failure and failure count.
+
+When cached data is available during a failure, `/vehicle` continues to return it and `/health` returns HTTP 200 with `status: degraded`. Without vehicle data, health remains HTTP 503 / `starting`. `last_update` advances only after a successful, nonempty telemetry response. Individual `telematic_data` timestamps still reflect when the vehicle transmitted each reading.
+
+Failed polls wait at least the configured interval; repeated failures increase the pause, up to 6 hours unless a quota or `Retry-After` deadline is later. Pending schedules and errors survive restarts. Partial responses retain previously received values and their original timestamps; empty responses never replace the cache. Cache, token and request-budget files are written atomically.
+
+A temporary token-refresh failure preserves the refresh token and reports an error for the next scheduled attempt. A new device login is requested only when BMW explicitly rejects the refresh token. Each poll is bounded to 45 seconds, including authentication, so an interactive login cannot block polling indefinitely. Logs record each attempt outcome and the next scheduled poll time.
 
 ## GitHub Actions
 

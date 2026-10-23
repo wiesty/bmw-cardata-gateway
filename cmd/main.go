@@ -2,13 +2,16 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/wiesty/bmw-cardata-gateway/internal/api"
@@ -32,9 +35,9 @@ func main() {
 	clientID := mustEnv("BMW_CLIENT_ID")
 	port := envOr("REST_PORT", "8080")
 	dataDir := envOr("DATA_DIR", "/data")
-	pollMinutes := parseIntOr(envOr("POLL_INTERVAL_MINUTES", "30"), 30)
-	if pollMinutes < 10 {
-		pollMinutes = 10
+	pollMinutes := parseIntOr(envOr("POLL_INTERVAL_MINUTES", "60"), 60)
+	if pollMinutes < 30 {
+		pollMinutes = 30
 	}
 
 	corsOrigins := envOr("CORS_ORIGINS", "*")
@@ -62,10 +65,14 @@ func main() {
 	})
 
 	client := bmw.NewClient(auth)
-	ctx := context.Background()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
 	vins, containerID, err := bmw.BootstrapMulti(ctx, client, dataDir, explicitVINs)
 	if err != nil {
+		if ctx.Err() != nil {
+			return
+		}
 		log.Fatalf("bootstrap: %v", err)
 	}
 
@@ -106,7 +113,16 @@ func main() {
 	fmt.Println()
 
 	log.Printf("[api] listening on :%s", port)
-	if err := http.ListenAndServe(":"+port, mux); err != nil {
+	server := &http.Server{Addr: ":" + port, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			log.Printf("[api] shutdown: %v", err)
+		}
+	}()
+	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatalf("server: %v", err)
 	}
 }

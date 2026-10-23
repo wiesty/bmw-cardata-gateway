@@ -4,8 +4,8 @@ const openapiSpec = `{
   "openapi": "3.0.3",
   "info": {
     "title": "Wiestys Unofficial BMW CarData Gateway",
-    "description": "Minimal REST bridge for BMW CarData. Simplified wrapper around the official BMW CarData API — exposes vehicle telemetry as a local REST endpoint.\n\n**Rate limit:** 50 REST requests per day, reset at 00:00 UTC. Vehicle discovery and container management also consume requests. Default poll interval: 30 min per vehicle; increase it for multiple vehicles.\n\n**Authentication:** If API_KEY env var is set, all endpoints (except /docs) require X-API-Key or Authorization: Bearer header.\n\n**Note:** Fields that don't apply to your vehicle type (e.g. battery fields on ICE, fuel fields on BEV) are omitted from the response.",
-    "version": "1.2.0"
+    "description": "Minimal REST bridge for BMW CarData. Simplified wrapper around the official BMW CarData API — exposes vehicle telemetry as a local REST endpoint.\n\n**Rate limit:** 50 REST requests per day, reset at 00:00 UTC. Vehicle discovery and container management also consume requests. Default poll interval: 60 min per vehicle; increase it for multiple vehicles.\n\n**Authentication:** If API_KEY env var is set, all endpoints (except /docs) require X-API-Key or Authorization: Bearer header.\n\n**Note:** Fields that don't apply to your vehicle type (e.g. battery fields on ICE, fuel fields on BEV) are omitted from the response.",
+    "version": "1.2.1"
   },
   "servers": [
     { "url": "http://localhost:8080", "description": "Local" }
@@ -23,8 +23,20 @@ const openapiSpec = `{
       "Health": {
         "type": "object",
         "properties": {
-          "status": { "type": "string", "enum": ["ok", "starting"] },
-          "last_update": { "type": "string", "format": "date-time", "nullable": true }
+          "status": { "type": "string", "enum": ["ok", "starting", "degraded"] },
+          "last_update": { "type": "string", "format": "date-time", "nullable": true },
+          "polling": { "type": "object", "additionalProperties": { "$ref": "#/components/schemas/PollStatus" } }
+        }
+      },
+      "PollStatus": {
+        "type": "object",
+        "properties": {
+          "state": { "type": "string", "enum": ["waiting", "polling", "degraded"] },
+          "last_attempt": { "type": "string", "format": "date-time" },
+          "last_success": { "type": "string", "format": "date-time" },
+          "next_poll": { "type": "string", "format": "date-time" },
+          "last_error": { "type": "string" },
+          "consecutive_failures": { "type": "integer" }
         }
       },
       "VehicleEntry": {
@@ -33,7 +45,8 @@ const openapiSpec = `{
         "properties": {
           "vin":         { "type": "string", "description": "Vehicle Identification Number" },
           "last_update": { "type": "string", "format": "date-time", "nullable": true, "description": "Timestamp of last successful poll" },
-          "ready":       { "type": "boolean", "description": "Whether data is available" }
+          "ready":       { "type": "boolean", "description": "Whether data is available" },
+          "polling": { "$ref": "#/components/schemas/PollStatus" }
         }
       },
       "Vehicle": {
@@ -211,7 +224,7 @@ const openapiSpec = `{
         "description": "Returns service status and timestamp of last successful poll across all tracked vehicles.",
         "responses": {
           "200": {
-            "description": "Service running, data available",
+            "description": "Service running with data; status may be degraded when polling failed",
             "content": {
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/Health" },

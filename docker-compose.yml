@@ -9,7 +9,7 @@ services:
     environment:
       - BMW_CLIENT_ID=${BMW_CLIENT_ID:?Set BMW_CLIENT_ID in .env}
       - REST_PORT=8080
-      - POLL_INTERVAL_MINUTES=${POLL_INTERVAL_MINUTES:-30}
+      - POLL_INTERVAL_MINUTES=${POLL_INTERVAL_MINUTES:-60}
       - CORS_ORIGINS=${CORS_ORIGINS:-*}
       - API_KEY=${API_KEY:-}
       - BMW_VINS=${BMW_VINS:-}

@@ -23,3 +23,6 @@ bmw-bridge
 .idea/
 .vscode/
 *.swp
+
+# Persisted shared BMW request budget
+requests.json
