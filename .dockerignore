@@ -1,0 +1,9 @@
+.git
+.env
+*.env.local
+data
+session.json
+state*.json
+bmw-bridge
+dist
+.DS_Store

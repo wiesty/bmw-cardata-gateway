@@ -1,0 +1,20 @@
+services:
+  bmw-cardata-gateway:
+    build: .
+    image: ghcr.io/wiesty/bmw-cardata-gateway:latest
+    container_name: bmw-cardata-gateway
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - BMW_CLIENT_ID=${BMW_CLIENT_ID:?Set BMW_CLIENT_ID in .env}
+      - REST_PORT=8080
+      - POLL_INTERVAL_MINUTES=${POLL_INTERVAL_MINUTES:-30}
+      - CORS_ORIGINS=${CORS_ORIGINS:-*}
+      - API_KEY=${API_KEY:-}
+      - BMW_VINS=${BMW_VINS:-}
+    volumes:
+      - bmw_data:/data
+
+volumes:
+  bmw_data:
